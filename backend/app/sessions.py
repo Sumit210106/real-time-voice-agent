@@ -14,11 +14,11 @@ def create_session(ws):
     return session_id
 
 
-def remove_sessions(session_id):
+def remove_session(session_id):
     if session_id in sessions:
         del sessions[session_id]
     
 
-def get_sessions(session_id):
+def get_session(session_id):
     return sessions.get(session_id)
 
