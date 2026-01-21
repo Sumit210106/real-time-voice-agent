@@ -1,6 +1,6 @@
 from fastapi import WebSocket , WebSocketDisconnect
 from .sessions import create_session, remove_session
-
+import numpy as np
 import json
 
 '''websocket message will be like this -> 
@@ -76,7 +76,11 @@ async def audio_ws(websocket: WebSocket):
     try:
         while True:
             data = await websocket.receive_bytes()
-            print("chunk bytes: ",len(data))
+            samples = np.frombuffer(data,dtype = np.float32)
+            # print(f"samples -> {samples}")
+            rms = np.sqrt(np.mean(samples**2))
+            print(f"Chunk received: {len(samples)} samples | RMS: {rms:.5f}")
+            
     except WebSocketDisconnect:
         print("Audio WS disconnected")
         
