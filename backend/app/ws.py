@@ -55,7 +55,7 @@ async def websocket_handler(websocket :WebSocket):
                     
             elif msg_type == 'audio':
                 # audio logic 
-                print(f"[{session_id}] Audio chunk received")
+                print(f"[{session_id}] Audio chunk received (json mode)")
             
             else:
                 print(f"[{session_id}] Unknown message type:", msg_type)
@@ -66,5 +66,18 @@ async def websocket_handler(websocket :WebSocket):
 
     except WebSocketDisconnect: 
         remove_sessions(session_id)
+        print(f"[{session_id}] Disconnected")
+        
+# binary audio ws
+async def audio_ws(websocket: WebSocket):
+    await websocket.accept()
+    print("Audio WS connected")
+
+    try:
+        while True:
+            data = await websocket.receive_bytes()
+            print("chunk bytes: ",len(data))
+    except WebSocketDisconnect:
+        print("Audio WS disconnected")
         
         
