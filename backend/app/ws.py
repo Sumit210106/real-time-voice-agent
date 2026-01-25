@@ -150,6 +150,11 @@ async def audio_ws(websocket: WebSocket):
         
             if utterance is not None:
                 text = await stt.transcribe(utterance)
+                message = {
+                    "type": "transcript",
+                    "text": text
+                }
+                await websocket.send_json(message)
                 print("TRANSCRIPT:", text)
                 
             rms = np.sqrt(np.mean(clean**2))

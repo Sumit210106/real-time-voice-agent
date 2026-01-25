@@ -79,6 +79,18 @@ export default function VoiceMic() {
     try {
       const ws = new WebSocket("ws://localhost:8000/ws/audio");
       wsRef.current = ws;
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+
+          if (msg.type === "transcript") {
+            console.log("Transcript from backend:", msg.text);
+          }
+        } catch {
+          console.error("Error parsing WS message:", event.data);
+        }
+      };
+
       ws.onopen = () => console.log("Audio WS connected");
       ws.onclose = () => console.log("Audio WS closed");
 
