@@ -7,6 +7,7 @@ export default function VoiceMic() {
   const [isActive, setIsActive] = useState(false);
   const [volume, setVolume] = useState(0);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [transcripts, setTranscripts] = useState<string[]>([]);
 
   const wsRef = useRef<WebSocket | null>(null);
   const audioRef = useRef<{ context: AudioContext; analyser: AnalyserNode } | null>(null);
@@ -84,7 +85,7 @@ export default function VoiceMic() {
           const msg = JSON.parse(event.data);
 
           if (msg.type === "transcript") {
-            console.log("Transcript from backend:", msg.text);
+            setTranscripts(prev => [...prev, msg.text]);
           }
         } catch {
           console.error("Error parsing WS message:", event.data);
@@ -167,6 +168,17 @@ export default function VoiceMic() {
         <div className="h-1 bg-zinc-900 overflow-hidden">
           <div className="h-full bg-white transition-all duration-75" style={{ width: `${volume}%` }} />
         </div>
+      </div>
+      <div className="w-full max-h-40 overflow-y-auto border-t border-zinc-800 pt-4 space-y-2">
+        {transcripts.map((text, i) => (
+          <div
+            key={i}
+            className="text-xs font-mono text-zinc-300 bg-zinc-900 p-2 rounded"
+          >
+            {text}
+             {/* , {i + 1} */}
+          </div>
+        ))}
       </div>
 
       <p className="text-[10px] font-mono text-zinc-600 uppercase">
