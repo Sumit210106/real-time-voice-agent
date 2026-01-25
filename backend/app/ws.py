@@ -2,6 +2,8 @@ from fastapi import WebSocket , WebSocketDisconnect
 from .sessions import create_session, remove_session
 import numpy as np
 import json
+from app.audio.vad import VoiceActivityDetector
+from app.audio.utterance import UtteranceCollector
 
 '''websocket message will be like this -> 
 
@@ -119,15 +121,30 @@ async def audio_ws(websocket: WebSocket):
     print("Audio WS connected")
 
     noise_hero = NoiseHero()
+    vad = VoiceActivityDetector()
+    collector = UtteranceCollector()
     
     try:
         while True:
             data = await websocket.receive_bytes()
             samples = np.frombuffer(data,dtype = np.float32)
+            
             # print(f"samples -> {samples}")
             clean = noise_hero.suppress(samples)
             # print(clean)
             # print(f"clean -> {clean}")
+            
+            vad_result = vad.process(clean)
+            print(f"VAD result: {vad_result}")
+
+            utterance = collector.process(clean, vad_result)
+            if vad_result is not None:
+                print("VAD:", vad_result)
+        
+        
+            if utterance is not None:
+                print("UTTERANCE READY:", utterance.shape)
+                
             rms = np.sqrt(np.mean(clean**2))
             print(f"Chunk received: {len(clean)} samples | RMS: {rms:.5f}")
             
