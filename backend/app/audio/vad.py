@@ -2,7 +2,7 @@ import numpy as np
 
 class VoiceActivityDetector:
     def __init__(self):
-        self.state = "silence"
+        self.state = "Silence"
         self.noise_floor = 0.01
         # speech if rms > noise_floor * 3
         self.threshold_multiplier = 3.0
@@ -23,26 +23,27 @@ class VoiceActivityDetector:
         '''
         
         rms = np.sqrt(np.mean(samples ** 2))
-        if self.state == "silence" :
+        if self.state == "Silence" and rms < self.noise_floor * 1.5:
             self.noise_floor = (
                 self.noise_alpha * self.noise_floor + (1 - self.noise_alpha) * rms
             )
+
         threshold = max(0.01, self.noise_floor * self.threshold_multiplier)
         speech_detected = rms > threshold
-        if self.state == "silence":
+        if self.state == "Silence":
             if speech_detected :
-                self.state = "speech"
+                self.state = "Speech"
                 self.silent_frames = 0
                 return {"event": "speech_start"}
             return None
-        else:   #speech
+        else:   #Speech
             if speech_detected:
                 self.silent_frames = 0
                 return {"event":"speech_continue"}
             
             self.silent_frames += 1
             if self.silent_frames >= self.max_silent_frames:
-                self.state = "silence"
+                self.state = "Silence"
                 self.silent_frames = 0
                 return {"event":"speech_end"}
             return None 

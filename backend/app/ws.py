@@ -4,6 +4,7 @@ import numpy as np
 import json
 from app.audio.vad import VoiceActivityDetector
 from app.audio.utterance import UtteranceCollector
+from app.stt.dummy import DummySTT
 
 '''websocket message will be like this -> 
 
@@ -123,6 +124,7 @@ async def audio_ws(websocket: WebSocket):
     noise_hero = NoiseHero()
     vad = VoiceActivityDetector()
     collector = UtteranceCollector()
+    stt = DummySTT()
     
     try:
         while True:
@@ -136,14 +138,19 @@ async def audio_ws(websocket: WebSocket):
             
             vad_result = vad.process(clean)
             print(f"VAD result: {vad_result}")
-
-            utterance = collector.process(clean, vad_result)
+            
+            event = vad_result["event"] if vad_result else None
+            print(f"VAD event: {event}")
+            
+            utterance = collector.process(clean, event)
+            
             if vad_result is not None:
                 print("VAD:", vad_result)
         
         
             if utterance is not None:
-                print("UTTERANCE READY:", utterance.shape)
+                text = await stt.transcribe(utterance)
+                print("TRANSCRIPT:", text)
                 
             rms = np.sqrt(np.mean(clean**2))
             print(f"Chunk received: {len(clean)} samples | RMS: {rms:.5f}")
