@@ -5,6 +5,7 @@ import json
 from app.audio.vad import VoiceActivityDetector
 from app.audio.utterance import UtteranceCollector
 from app.stt.dummy import DummySTT
+from app.audio.wav_util import float32_to_wav_bytes, calculate_duration
 
 '''websocket message will be like this -> 
 
@@ -152,10 +153,16 @@ async def audio_ws(websocket: WebSocket):
                 })
         
             if utterance is not None:
+                duration = calculate_duration(utterance)
+                print(f"DEBUG: Collected {len(utterance)} samples. Calculated duration: {duration}s")
+                wav_data = float32_to_wav_bytes(utterance)
+                
                 text = await stt.transcribe(utterance)
                 await websocket.send_json({
                     "type": "transcript",
-                    "text": text
+                    "text": text,
+                    "duration": duration,   
+                    "status": "finalized"
                 })
                 
             rms = np.sqrt(np.mean(clean**2))
