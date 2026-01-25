@@ -81,7 +81,8 @@ class NoiseHero:
         self.window = np.hamming(1024)
     
     def suppress(self, raw: np.ndarray) -> np.ndarray:
-        if len(raw) != len(self.window):
+        # Performance check: only recreate window if chunk size actually changes
+        if raw.shape[0] != self.window.shape[0]:
             self.window = np.hamming(len(raw))
 
 
@@ -144,23 +145,23 @@ async def audio_ws(websocket: WebSocket):
             
             utterance = collector.process(clean, event)
             
-            if vad_result is not None:
-                print("VAD:", vad_result)
-        
+            if event in ["speech_start", "speech_end"]:
+                await websocket.send_json({
+                    "type": "vad",
+                    "event": event
+                })
         
             if utterance is not None:
                 text = await stt.transcribe(utterance)
-                message = {
+                await websocket.send_json({
                     "type": "transcript",
                     "text": text
-                }
-                await websocket.send_json(message)
-                print("TRANSCRIPT:", text)
+                })
                 
             rms = np.sqrt(np.mean(clean**2))
-            print(f"Chunk received: {len(clean)} samples | RMS: {rms:.5f}")
+            # Log only if there is significant signal
+            if rms > 0.01:
+                print(f"Active Chunk: RMS {rms:.4f}")
             
     except WebSocketDisconnect:
         print("Audio WS disconnected")
-        
-        

@@ -7,7 +7,18 @@ export default function VoiceMic() {
   const [isActive, setIsActive] = useState(false);
   const [volume, setVolume] = useState(0);
   const [isSpeaking, setIsSpeaking] = useState(false);
-  const [transcripts, setTranscripts] = useState<string[]>([]);
+
+  type TranscriptTurn = {
+    id: number;
+    text: string;
+    speaker: "user";
+    startedAt: number;
+    endedAt: number;
+  };
+
+  const [turns, setTurns] = useState<TranscriptTurn[]>([]);
+  const speechStartTimeRef = useRef<number | null>(null);
+  const turnId = useRef(0);
 
   const wsRef = useRef<WebSocket | null>(null);
   const audioRef = useRef<{ context: AudioContext; analyser: AnalyserNode } | null>(null);
@@ -49,8 +60,9 @@ export default function VoiceMic() {
     const percent = Math.min(cleanRms / currentMax, 1) * 100;
 
     smoothRef.current = smoothRef.current * 0.7 + percent * 0.3;
+    const speakingNow = smoothRef.current > SPEAK_THRESHOLD;
     setVolume(smoothRef.current);
-    setIsSpeaking(smoothRef.current > SPEAK_THRESHOLD);
+    setIsSpeaking(speakingNow); // Only controls the UI "Activity" text
 
     rafRef.current = requestAnimationFrame(updateLoop);
   };
@@ -84,11 +96,32 @@ export default function VoiceMic() {
         try {
           const msg = JSON.parse(event.data);
 
-          if (msg.type === "transcript") {
-            setTranscripts(prev => [...prev, msg.text]);
+          // 1. Backend tells us user started talking
+          if (msg.type === "vad" && msg.event === "speech_start") {
+            speechStartTimeRef.current = Date.now();
           }
-        } catch {
-          console.error("Error parsing WS message:", event.data);
+
+          // 2. Backend sends final transcript
+          if (msg.type === "transcript") {
+            const now = Date.now();
+            const startTime = speechStartTimeRef.current || now;
+            
+            setTurns(prev => [
+              ...prev,
+              {
+                id: turnId.current++,
+                text: msg.text,
+                speaker: "user",
+                startedAt: startTime,
+                endedAt: now,
+              }
+            ]);
+            
+            // Reset for next utterance
+            speechStartTimeRef.current = null;
+          }
+        } catch (err) {
+          console.error("WS Message Error:", err);
         }
       };
 
@@ -101,7 +134,12 @@ export default function VoiceMic() {
 
       streamRef.current = stream;
 
-      const { context, analyser } = initAudioContext(stream);
+      // Force 16kHz for STT efficiency and lower network bandwidth
+      const context = new AudioContext({ sampleRate: 16000 });
+      await context.resume();
+
+      const analyser = context.createAnalyser();
+      analyser.fftSize = 2048;
       audioRef.current = { context, analyser };
       bufferRef.current = new Uint8Array(analyser.fftSize);
 
@@ -111,8 +149,11 @@ export default function VoiceMic() {
       const worklet = new AudioWorkletNode(context, "recorder-processor");
       workletRef.current = worklet;
 
+      // Connect source to Analyser (UI) and Worklet (Backend)
+      // DO NOT connect to context.destination to prevent speaker-to-mic feedback loop
+      source.connect(analyser);
       source.connect(worklet);
-      worklet.connect(context.destination);
+      
       worklet.port.onmessage = onWorkletMessage;
 
       setIsActive(true);
@@ -169,14 +210,15 @@ export default function VoiceMic() {
           <div className="h-full bg-white transition-all duration-75" style={{ width: `${volume}%` }} />
         </div>
       </div>
-      <div className="w-full max-h-40 overflow-y-auto border-t border-zinc-800 pt-4 space-y-2">
-        {transcripts.map((text, i) => (
-          <div
-            key={i}
-            className="text-xs font-mono text-zinc-300 bg-zinc-900 p-2 rounded"
-          >
-            {text}
-             {/* , {i + 1} */}
+      <div className="w-full max-h-48 overflow-y-auto border-t border-zinc-800 pt-4 space-y-3">
+        {turns.map(turn => (
+          <div key={turn.id} className="bg-zinc-900 rounded p-3">
+            <div className="text-[10px] text-zinc-500 mb-1 font-mono uppercase">
+              User · {((turn.endedAt - turn.startedAt) / 1000).toFixed(1)}s
+            </div>
+            <div className="text-sm text-zinc-200 font-mono">
+              {turn.text}
+            </div>
           </div>
         ))}
       </div>
