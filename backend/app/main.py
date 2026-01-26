@@ -1,19 +1,23 @@
-from fastapi import FastAPI , WebSocket 
-from .ws import websocket_handler , audio_ws
+import logging
+from fastapi import FastAPI, WebSocket
+from .ws import websocket_handler, audio_ws
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 
 app = FastAPI()
 
 @app.get('/')
 def health():
-    return {"status" : "Backend is running"}
+    return {"status": "Backend is running"}
 
 @app.websocket('/ws')
-async def websocket_endpoints(ws : WebSocket):
+async def websocket_endpoints(ws: WebSocket):
     await websocket_handler(ws)
-    
-    
+
 @app.websocket('/ws/audio')
 async def websocket_audio_endpoints(ws: WebSocket):
     await audio_ws(ws)
-    
     

@@ -1,4 +1,6 @@
 fastapi
 uvicorn
 python-dotenv
-numpy 
+numpy
+deepgram-sdk
+groq
