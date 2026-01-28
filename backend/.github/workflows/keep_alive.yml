@@ -11,5 +11,5 @@ jobs:
     steps:
       - name: Ping Server
         run: |
-          curl -s https://your-app-name.onrender.com/health > /dev/null
+          curl -s https://real-time-voice-agent.onrender.com/health > /dev/null
           echo "Server pinged at $(date)"

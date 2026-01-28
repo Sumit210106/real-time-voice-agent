@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 from app.sessions import get_session
 from groq import AsyncGroq
 import re
+from .tools import search_web, TAVILY_TOOL_DEFINITION
 
 logger = logging.getLogger(__name__)
 load_dotenv()
@@ -43,12 +44,35 @@ class GroqLLM:
                 model="llama-3.3-70b-versatile",
                 messages=messages,
                 temperature=0.7,
-                max_tokens=150, 
+                tools=[TAVILY_TOOL_DEFINITION],
+                tool_choice="auto",
+                max_tokens=300, 
+                temperature=0.7,
                 top_p=1,
                 stream=False 
             )
 
             response_text = completion.choices[0].message.content
+            if response_message.tool_calls:
+                messages.append(response_message)
+                
+                for tool_call in response_message.tool_calls:
+                    if tool_call.function.name == "search_web":
+                        args = json.loads(tool_call.function.arguments)
+                        search_results = await search_web(args['query'])
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "name": "search_web",
+                            "content": search_results
+                        })
+                final_completion = await self.client.chat.completions.create(
+                    model="llama-3.3-70b-versatile",
+                    messages=messages
+                )
+                response_text = final_completion.choices[0].message.content
+            else:
+                response_text = response_message.content
             session.history.append({"role": "user", "content": text})
             session.history.append({"role": "assistant", "content": response_text})
 
