@@ -1,12 +1,15 @@
-/**
- * utils/audio.ts
- */
+
+declare global {
+  interface Window {
+    webkitAudioContext: typeof AudioContext;
+  }
+}
 
 const TARGET_SAMPLE_RATE = 16000;
 
 export function initAudioContext(stream: MediaStream) {
-  const AudioContextAPI = (window as any).AudioContext || (window as any).webkitAudioContext;
-  const context = new AudioContextAPI({ sampleRate: TARGET_SAMPLE_RATE });
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  const context = new AudioContextClass({ sampleRate: TARGET_SAMPLE_RATE });
 
   const analyser = context.createAnalyser();
   analyser.fftSize = 2048;
@@ -14,18 +17,17 @@ export function initAudioContext(stream: MediaStream) {
   return { context, analyser };
 }
 
-// Added this back to resolve your import error
 export function readTimeDomain(analyser: AnalyserNode, buffer: Uint8Array) {
-  analyser.getByteTimeDomainData(buffer);
+  analyser.getByteTimeDomainData(buffer as Uint8Array<ArrayBuffer>);
 }
-
 export function calcRMS(buffer: Uint8Array) {
+  const b = buffer as Uint8Array<ArrayBuffer>;
   let sum = 0;
-  for (let i = 0; i < buffer.length; i++) {
-    const v = (buffer[i] - 128) / 128;
+  for (let i = 0; i < b.length; i++) {
+    const v = (b[i] - 128) / 128;
     sum += v * v;
   }
-  return Math.sqrt(sum / (buffer.length || 1));
+  return Math.sqrt(sum / (b.length || 1));
 }
 
 export function downsampleAndConvert(
@@ -59,6 +61,7 @@ export class AudioStreamPlayer {
 
     const int16 = new Int16Array(arrayBuffer);
     const float32 = new Float32Array(int16.length);
+    
     for (let i = 0; i < int16.length; i++) {
       float32[i] = int16[i] / 32768.0;
     }
