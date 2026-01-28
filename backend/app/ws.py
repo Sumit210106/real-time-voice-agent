@@ -123,6 +123,7 @@ async def audio_ws(websocket: WebSocket):
     print("Audio WS connected")
     session_id = create_session(websocket)
     print(f"[{session_id}] Session created")
+    
     noise_hero = NoiseHero()
     vad = VoiceActivityDetector()
     collector = UtteranceCollector()
@@ -136,6 +137,10 @@ async def audio_ws(websocket: WebSocket):
         while True:
             try:
                 message = await websocket.receive()
+                
+                if message["type"] == "websocket.disconnect":
+                    logger.info(f"[{session_id}] WebSocket disconnect signal received")
+                    break
                 
                 if "text" in message:
                     try:

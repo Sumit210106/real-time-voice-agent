@@ -1,7 +1,7 @@
 "use client";
 import React, { useState, useRef, useEffect } from "react";
 import { Mic, MicOff } from "lucide-react";
-import { initAudioContext, readTimeDomain, calcRMS } from "@/utils/audio";
+import { initAudioContext, readTimeDomain, calcRMS, floatTo16BitPCM } from "@/utils/audio";
 
 export default function VoiceMic() {
   const [isActive, setIsActive] = useState(false);
@@ -74,12 +74,12 @@ export default function VoiceMic() {
     accumulatorRef.current.push(...samples);
 
     while (accumulatorRef.current.length >= CHUNK_SIZE) {
-      const chunk = accumulatorRef.current.slice(0, CHUNK_SIZE);
+      const chunk = new Float32Array(accumulatorRef.current.slice(0, CHUNK_SIZE));
       accumulatorRef.current = accumulatorRef.current.slice(CHUNK_SIZE);
 
       if (wsRef.current?.readyState === WebSocket.OPEN) {
-        const float32 = new Float32Array(chunk);
-        wsRef.current.send(float32.buffer);
+        const pcmBuffer = floatTo16BitPCM(chunk);
+        wsRef.current.send(pcmBuffer);
       }
 
       console.log("Chunk sent:", chunk.length);
@@ -96,13 +96,13 @@ export default function VoiceMic() {
         try {
           const msg = JSON.parse(event.data);
 
-          // 1. Backend tells us user started talking
+          //  Backend tells us user started talking
           if (msg.type === "vad" && msg.event === "speech_start") {
             speechStartTimeRef.current = Date.now();
           }
 
-          // 2. Backend sends final transcript
-          if (msg.type === "transcript") {
+          //  Backend sends AI response
+          if (msg.type === "agent_response") {
             const now = Date.now();
             const startTime = speechStartTimeRef.current || now;
             
@@ -117,7 +117,10 @@ export default function VoiceMic() {
               }
             ]);
             
-            // Reset for next utterance
+            if (msg.audio) {
+              const audio = new Audio(`data:audio/wav;base64,${msg.audio}`);
+              audio.play();
+            }
             speechStartTimeRef.current = null;
           }
         } catch (err) {
