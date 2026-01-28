@@ -6,3 +6,4 @@ numpy
 groq
 deepgram-sdk
 tavily-python
+pydantic

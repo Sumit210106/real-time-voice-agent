@@ -4,6 +4,7 @@ from .ws import websocket_handler, audio_ws , active_tasks
 from pydantic import BaseModel
 from app.sessions import get_session
 from fastapi.middleware.cors import CORSMiddleware
+from app.api.dashboard import router as dashboard_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -21,13 +22,14 @@ app.add_middleware(
     allow_headers=["*"],  
 )
 
+app.include_router(dashboard_router)
+
 @app.on_event("startup")
 async def startup_event():
     """Initialize critical components on startup."""
     logger.info("🚀 Starting up voice agent...")
     try:
         from .llm.groq_provider import GroqLLM
-        # Pre-initialize the LLM client to warm up connections
         llm = GroqLLM()
         logger.info("✅ Groq LLM initialized")
     except Exception as e:

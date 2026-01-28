@@ -137,7 +137,8 @@ class NoiseHero:
     
 async def audio_ws(websocket: WebSocket):
     await websocket.accept()
-    session_id = create_session(websocket)
+    # Fix 1: Pass "guest_user" string instead of websocket object
+    session_id = create_session(user_id="guest_user")
     uid = session_id[-6:] 
     
     print(f"\n🟢 [CONNECTION] WebSocket Accepted | ID: {uid}")
@@ -153,7 +154,6 @@ async def audio_ws(websocket: WebSocket):
         nonlocal current_transcript
         if transcript.strip():
             current_transcript = transcript 
-            # 1. LIVE TRANSCRIPT PRINT
             print(f"   📝 [TRANSCRIPTING] {uid}: \"{transcript}\"")
             await websocket.send_json({"type": "caption", "text": transcript})
     
@@ -174,10 +174,8 @@ async def audio_ws(websocket: WebSocket):
                 vad_result = vad.process(clean_samples)
                 event = vad_result.get("event") if vad_result else None
                 
-                # Keep Deepgram alive
                 await stt_stream.send_audio(data)
 
-                # 2. VAD STATUS PRINTS
                 if event == "speech_start":
                     is_user_speaking = True
                     print(f"🎤 [VAD] User is SPEAKING... | ID: {uid}")
@@ -191,7 +189,6 @@ async def audio_ws(websocket: WebSocket):
                     last_speech_time = time.perf_counter()
                     print(f"😶 [VAD] User stopped speaking. Waiting for turn trigger...")
 
-                # 3. TURN TRIGGER PRINT
                 silence_duration = time.perf_counter() - last_speech_time
                 if not is_user_speaking and silence_duration > 0.8 and current_transcript.strip():
                     final_input = current_transcript
@@ -227,7 +224,17 @@ async def _process_text_to_audio(websocket, session_id, transcript, vad_latency)
         print(f"   🧠 [LLM] Requesting response from Groq...")
         
         async for sentence in llm_provider.get_response_stream(transcript, "en", session_id):
-            ttft = time.perf_counter() - llm_start
+            if first_sentence:
+                ttft = time.perf_counter() - llm_start
+                if session:
+                    tool_used = (ttft > 2.5 or "check" in sentence.lower())
+                    
+                    session.update_metrics(ttft=ttft, tool_used=tool_used)
+                    
+                    if tool_used:
+                        print(f"   🔧 [METRICS] Tool was used - TTFT: {ttft:.3f}s")
+                
+                first_sentence = False
             
             print(f"   💬 [LLM SENTENCE] \"{sentence}\"")
             
@@ -238,19 +245,13 @@ async def _process_text_to_audio(websocket, session_id, transcript, vad_latency)
             total_e2e = time.perf_counter() - start_time + vad_latency
 
             if audio:
-                if first_sentence:
+                if not first_sentence and sentence: 
                     print(f"   ⚡ [FIRST AUDIO] Ready in {ttft:.3f}s (incl. filler if tool used)")
-                    first_sentence = False
 
                 await websocket.send_json({
                     "type": "partial_agent_response",
                     "ai_partial": sentence,
-                    "metrics": {
-                        "vad_latency": vad_latency,
-                        "llm_ttft": ttft,
-                        "tts_latency": tts_lat,
-                        "total_e2e": total_e2e
-                    }
+                    "metrics": session.get_metrics() if session else {}
                 })
                 await websocket.send_bytes(audio)
         
