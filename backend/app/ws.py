@@ -177,9 +177,17 @@ async def audio_ws(websocket: WebSocket):
                     
                     vad_result = vad.process(clean)
                     event = vad_result.get("event") if vad_result else None
+                    session = get_session(session_id)
                     
                     if event == "speech_start":
                         active_speech = True
+                        if session and session.is_playing:
+                            logger.info(f"[{session_id}] 🛑 Barge-in detected! Sending interrupt.")
+                            session.is_playing = False 
+                            await websocket.send_json({
+                                "type": "interrupt",
+                                "message": "User interrupted AI speech"
+                            })
                     elif event == "speech_end":
                         active_speech = False
                     
@@ -299,6 +307,9 @@ async def _process_utterance(websocket: WebSocket, session_id: str, utterance: n
         
         print(f"[{session_id}] 🔵 Step 5: Sending response to client...")
         try:
+            session = get_session(session_id)
+            if session:
+                session.is_playing = True
             response_data = {
                 "type": "agent_response",
                 "text": transcript,
