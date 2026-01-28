@@ -3,6 +3,7 @@ from fastapi import FastAPI, WebSocket
 from .ws import websocket_handler, audio_ws
 from pydantic import BaseModel
 from app.sessions import get_session
+from fastapi.middleware.cors import CORSMiddleware
 
 logging.basicConfig(
     level=logging.INFO,
@@ -10,11 +11,18 @@ logging.basicConfig(
 )
 
 app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  
+    allow_credentials=True,
+    allow_methods=["*"], 
+    allow_headers=["*"],  
+)
 
 class ContextUpdate(BaseModel):
     context: str
     
-@app.get('/')
+@app.get('/health')
 def health():
     return {"status": "Backend is running"}
 

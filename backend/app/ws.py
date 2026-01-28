@@ -134,181 +134,106 @@ class NoiseHero:
         return clean.astype(np.float32)
 
     
-    
-
-    
 async def audio_ws(websocket: WebSocket):
     await websocket.accept()
-    print("Audio WS connected")
     session_id = create_session(websocket)
-    print(f"[{session_id}] Session created")
-    
-    noise_hero = NoiseHero()
     vad = VoiceActivityDetector()
     collector = UtteranceCollector()
     
-    last_utterance = None  
-    
     try:
         while True:
-            try:
-                message = await websocket.receive()
-                
-                if message["type"] == "websocket.disconnect":
-                    logger.info(f"[{session_id}] WebSocket disconnect signal received")
-                    break
-                
-                if "text" in message:
-                    try:
-                        msg = json.loads(message["text"])
-                    except json.JSONDecodeError as e:
-                        logger.warning(f"Invalid JSON received: {e}")
-                        await websocket.send_json({"type": "error", "message": "Invalid JSON"})
-                        continue
-                    
-                    msg_type = msg.get("type")
-                    
-                    if msg_type == "audio_end":
-                        logger.info(f"[{session_id}] Audio stream ended by client")
-                        await _process_final_utterance(websocket, session_id, collector, stt_provider, llm_provider, tts_provider, last_utterance)
-                    else:
-                        logger.debug(f"[{session_id}] Received control message: {msg_type}")
-                
-                elif "bytes" in message:
-                    data = message["bytes"]
-                    
-                    if len(data) < 2:
-                        logger.warning(f"Received invalid audio chunk size: {len(data)}")
-                        continue
-                    
-                    try:
-                        samples = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
-                    except Exception as e:
-                        logger.error(f"Audio conversion error: {e}")
-                        continue
-                    
-                    clean = noise_hero.suppress(samples)
-                    
-                    vad_result = vad.process(clean)
-                    event = vad_result.get("event") if vad_result else None
-                    session = get_session(session_id)
-                    
-                    if event == "speech_start":
-                        active_speech = True
-                        if session and session.is_playing:
-                            logger.info(f"[{session_id}] 🛑 Barge-in detected! Sending interrupt.")
-                            session.is_playing = False 
-                            await websocket.send_json({
-                                "type": "interrupt",
-                                "message": "User interrupted AI speech"
-                            })
-                    elif event == "speech_end":
-                        active_speech = False
-                    
-                    utterance = collector.process(clean, event)
-                    
-                    if event in ["speech_start", "speech_end"]:
-                        await websocket.send_json({
-                            "type": "vad",
-                            "event": event,
-                            "timestamp": message.get("time", 0)
-                        })
-                    
-                    if utterance is not None:
-                        asyncio.create_task(_process_utterance(websocket, session_id, utterance, stt_provider, llm_provider, tts_provider))
-                
-                else:
-                    logger.warning(f"[{session_id}] Unknown message type: {message}")
-                    
-            except WebSocketDisconnect:
-                logger.info(f"[{session_id}] Client disconnected")
+            message = await websocket.receive()
+            
+            if message["type"] == "websocket.disconnect":
                 break
-            except Exception as e:
-                logger.error(f"[{session_id}] Error processing message: {e}", exc_info=True)
-                try:
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": "Internal server error"
-                    })
-                except Exception as send_error:
-                    logger.error(f"Failed to send error message: {send_error}")
-                    break
-
-    except WebSocketDisconnect:
-        logger.info(f"[{session_id}] WebSocket disconnected")
-    except Exception as e:
-        logger.error(f"[{session_id}] Critical error: {e}", exc_info=True)
-        try:
-            await websocket.close(code=1011, reason="Internal server error")
-        except Exception as close_error:
-            logger.error(f"Error closing WebSocket: {close_error}")
             
-            
-async def _process_utterance(websocket: WebSocket, session_id: str, utterance: np.ndarray, 
-                             stt, llm, tts) -> None:
-    """
-    Handles the end-to-end voice pipeline: STT -> LLM -> TTS.
-    Optimized for sub-second latency via parallel sentence-level TTS streaming.
-    """
-    start_time = time.perf_counter()
-    uid = session_id[-6:]
-    
-    try:
-        # 1. Basic Audio Validation
-        duration = len(utterance) / 16000 
-        if duration < 0.4: 
-            return # Ignore micro-noises to save API costs
+            if "bytes" in message:
+                data = message["bytes"]
+                samples = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
 
-        print(f"\n[🚀 START PIPELINE | ID: {uid} | Audio: {duration:.2f}s]")
-
-        # 2. STEP 1: STT (Speech to Text)
-        wav_data = float32_to_wav_bytes(utterance)
-        transcript, lang = await stt.transcribe(wav_data)
-        
-        if not transcript or not transcript.strip():
-            print(f"DEBUG 🎙️  | {uid} | STT: [EMPTY]")
-            return
-        
-        print(f"DEBUG 🎙️  | {uid} | STT: '{transcript}' | {time.perf_counter()-start_time:.2f}s")
-
-        # 3. SET SESSION STATE (For Barge-in Detection)
-        # We tell the session manager the AI is now generating a response
-        session = get_session(session_id)
-        if session:
-            session.is_playing = True
-
-        # 4. STEP 2 & 3: LLM & PARALLEL TTS
-        print(f"DEBUG 🧠 | {uid} | LLM: Starting Stream...")
-        
-        # Helper function to generate audio and send via WebSocket concurrently
-        async def generate_and_send(sentence_text):
-            try:
-                # Generate audio for just this sentence
-                audio_bytes = await tts.generate_audio(sentence_text)
+                vad_result = vad.process(samples)
+                event = vad_result.get("event") if vad_result else None
                 
-                if audio_bytes:
-                    audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
-                    await websocket.send_json({
-                        "type": "partial_agent_response",
-                        "text": transcript,
-                        "ai_partial": sentence_text,
-                        "audio": audio_b64
-                    })
-                    print(f"DEBUG 📡 | {uid} | Sent chunk | {time.perf_counter()-start_time:.2f}s")
-            except Exception as tts_err:
-                logger.error(f"TTS Parallel Task Error: {tts_err}")
-
-        async for sentence in llm.get_response_stream(transcript, lang, session_id):
-            asyncio.create_task(generate_and_send(sentence))
-
-        print(f"DEBUG ✅ | {uid} | PIPELINE HANDED TO TASKS | Total: {time.perf_counter()-start_time:.2f}s")
+                session = get_session(session_id)
+                if event == "speech_start" and session and session.is_playing:
+                    session.is_playing = False 
+                    await websocket.send_json({"type": "interrupt"})
+                
+                utterance = collector.process(samples, event)
+                
+                if utterance is not None:
+                    asyncio.create_task(_process_utterance(websocket, session_id, utterance, stt_provider, llm_provider, tts_provider))
 
     except Exception as e:
-        print(f"DEBUG 🛑 | {uid} | ERROR: {str(e)}")
+        logger.error(f"Error: {e}")
+    finally:
+        remove_session(session_id)
+ 
+async def _process_utterance(websocket: WebSocket, session_id: str, utterance: np.ndarray, stt, llm, tts) -> None:
+    uid = session_id[-6:]
+    pipe_start = time.perf_counter()
+    
+    dur = len(utterance) / 16000
+    print(f"\n{'━'*60}")
+    print(f" ▶️  PIPELINE START | ID: {uid} | AUDIO: {dur:.2f}s")
+    print(f"{'━'*60}")
+
+    try:
+        stt_now = time.perf_counter()
+        transcript, lang = await stt.transcribe(float32_to_wav_bytes(utterance))
+        stt_lat = time.perf_counter() - stt_now
+
+        if not transcript or not transcript.strip():
+            print(f" ❌ STT: [SILENCE/NOISE] ({stt_lat:.3f}s)")
+            print(f"{'━'*60}\n")
+            return
+
+        print(f" 🟢 STT | \"{transcript}\"")
+        print(f"    └─ Latency: {stt_lat:.3f}s")
+
+        print(f" 🟢 LLM | Generating Response...")
+        llm_now = time.perf_counter()
+        
         session = get_session(session_id)
-        if session:
-            session.is_playing = False
-             
+        if session: session.is_playing = True
+
+        idx = 1
+        async for sentence in llm.get_response_stream(transcript, lang, session_id):
+            llm_lat = time.perf_counter() - llm_now
+            
+            tts_now = time.perf_counter()
+            audio = await tts.generate_audio(sentence)
+            tts_lat = time.perf_counter() - tts_now
+            chunk_total = time.perf_counter() - pipe_start
+
+            print(f"    ├─ CHUNK {idx}")
+            print(f"    │  📝 Text: {sentence[:50]}{'...' if len(sentence) > 50 else ''}")
+            print(f"    │  ⏱️  Latencies: LLM:{llm_lat:.2f}s | TTS:{tts_lat:.2f}s | TTFT:{chunk_total:.2f}s")
+            
+            if audio:
+                await websocket.send_json({
+                    "type": "partial_agent_response",
+                    "ai_partial": sentence,
+                    "stt_latency": stt_lat,
+                    "llm_latency": llm_lat,
+                    "tts_latency": tts_lat,
+                    "total_latency": chunk_total
+                })
+                await websocket.send_bytes(audio)
+            idx += 1
+
+    
+        total_time = time.perf_counter() - pipe_start
+        print(f"{'─'*60}")
+        print(f" ✅ FINISHED | ID: {uid}")
+        print(f"    TOTAL PIPELINE TIME: {total_time:.3f}s")
+        print(f"    BOTTLENECK: {max([('STT', stt_lat), ('LLM', llm_lat)], key=lambda x: x[1])[0]}")
+        print(f"{'━'*60}\n")
+
+    except Exception as e:
+        print(f" 🛑 PIPELINE ERROR: {e}")
+        if session: session.is_playing = False
+        
 async def _process_final_utterance(websocket: WebSocket, session_id: str, collector, 
                                    stt, llm, tts, last_utterance) -> None:
     """Process any remaining buffered audio on stream end."""
