@@ -66,15 +66,24 @@ export default function VoiceMic() {
   /* ---------- Start Mic ---------- */
   const startMic = async () => {
     try {
-      const ws = new WebSocket("ws://localhost:8000/ws/audio");
-      ws.binaryType = "arraybuffer"; // Industry standard for raw audio
+      const wsUrl = "wss://real-time-voice-agent.onrender.com/ws/audio";
+      // const wsUrl = "ws://localhost:8000/ws/audio";
+      const ws = new WebSocket(wsUrl);
+      ws.binaryType = "arraybuffer"; 
       wsRef.current = ws;
 
       ws.onmessage = async (event) => {
         if (typeof event.data === "string") {
           try {
             const msg = JSON.parse(event.data);
-            
+
+            if (msg.type === "interrupt") {
+              console.log("⚡ Barge-in: Interrupting AI playback");
+              playerRef.current?.stop(); 
+              setVolume(0);
+              return; 
+            }
+
             if (msg.type === "partial_agent_response") {
               setTurns((prev) => {
                 const last = prev[prev.length - 1];

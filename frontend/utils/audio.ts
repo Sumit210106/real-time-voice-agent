@@ -51,9 +51,22 @@ export function downsampleAndConvert(
 export class AudioStreamPlayer {
   private context: AudioContext;
   private nextStartTime: number = 0;
+  private activeSources: AudioBufferSourceNode[] = [];
 
   constructor(context: AudioContext) {
     this.context = context;
+  }
+  stop() {
+    console.log("🛑 Interruption: Stopping all scheduled audio chunks.");
+    this.activeSources.forEach((source) => {
+      try {
+        source.stop();
+        source.disconnect();
+      } catch (e) {
+      }
+    });
+    this.activeSources = [];
+    this.nextStartTime = 0; 
   }
 
   async playRawChunk(arrayBuffer: ArrayBuffer) {
@@ -72,7 +85,11 @@ export class AudioStreamPlayer {
     const source = this.context.createBufferSource();
     source.buffer = audioBuffer;
     source.connect(this.context.destination);
-
+    source.onended = () => {
+      this.activeSources = this.activeSources.filter((s) => s !== source);
+    };
+    this.activeSources.push(source);
+    
     const currentTime = this.context.currentTime;
     if (this.nextStartTime < currentTime) {
       this.nextStartTime = currentTime + 0.05;

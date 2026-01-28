@@ -22,6 +22,7 @@ stt_provider = DeepgramSTT()
 llm_provider = GroqLLM()
 tts_provider = DeepgramTTS()
 
+active_tasks = {}
 
 '''
 Websocket Protocol 
@@ -155,14 +156,21 @@ async def audio_ws(websocket: WebSocket):
                 event = vad_result.get("event") if vad_result else None
                 
                 session = get_session(session_id)
-                if event == "speech_start" and session and session.is_playing:
-                    session.is_playing = False 
-                    await websocket.send_json({"type": "interrupt"})
                 
+                if event == "speech_start" and session and session.is_playing:
+                    if session_id in active_tasks:
+                        active_tasks[session_id].cancel()
+                        logger.info(f"[{session_id}] Active task cancelled due to Barge-In")
+                        
+                        if session.is_playing:
+                            session.is_playing = False 
+                            await websocket.send_json({"type": "interrupt"})
+                    
                 utterance = collector.process(samples, event)
                 
                 if utterance is not None:
-                    asyncio.create_task(_process_utterance(websocket, session_id, utterance, stt_provider, llm_provider, tts_provider))
+                    task = asyncio.create_task(_process_utterance(websocket, session_id, utterance, stt_provider, llm_provider, tts_provider))
+                    active_tasks[session_id] = task
 
     except Exception as e:
         logger.error(f"Error: {e}")
@@ -229,10 +237,23 @@ async def _process_utterance(websocket: WebSocket, session_id: str, utterance: n
         print(f"    TOTAL PIPELINE TIME: {total_time:.3f}s")
         print(f"    BOTTLENECK: {max([('STT', stt_lat), ('LLM', llm_lat)], key=lambda x: x[1])[0]}")
         print(f"{'━'*60}\n")
-
+        
+    except asyncio.CancelledError:
+        print(f" 🛑 PIPELINE CANCELLED (Barge-In) | ID: {uid}")
+        session = get_session(session_id)
+        if session: 
+            session.is_playing = False
+        raise
+    
     except Exception as e:
         print(f" 🛑 PIPELINE ERROR: {e}")
         if session: session.is_playing = False
+        
+    finally:
+        if session_id in active_tasks and active_tasks.get(session_id) == asyncio.current_task():
+            del active_tasks[session_id]
+            logger.info(f"[{session_id}] Task registry cleaned up.")
+            
         
 async def _process_final_utterance(websocket: WebSocket, session_id: str, collector, 
                                    stt, llm, tts, last_utterance) -> None:

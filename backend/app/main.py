@@ -1,6 +1,6 @@
 import logging
-from fastapi import FastAPI, WebSocket
-from .ws import websocket_handler, audio_ws
+from fastapi import FastAPI, WebSocket, HTTPException
+from .ws import websocket_handler, audio_ws , active_tasks
 from pydantic import BaseModel
 from app.sessions import get_session
 from fastapi.middleware.cors import CORSMiddleware
@@ -43,7 +43,12 @@ async def update_voice_context(session_id: str, data: ContextUpdate):
         raise HTTPException(status_code=404, detail="Session not found")
     
     session.system_prompt = data.context
-    logger.info(f"Context successfully updated for session {session_id}")
+    
+    if session_id in active_tasks:
+        active_tasks[session_id].cancel()
+        logger.info(f"[{session_id}] Interrupted active response to apply new context.")
+    
+    logger.info(f"[{session_id}] Context successfully updated.")
     
     return {
         "status": "success",
