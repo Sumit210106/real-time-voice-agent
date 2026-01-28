@@ -7,6 +7,12 @@ class DeepgramSTT:
         self.api_key = os.getenv("DEEPGRAM_API_KEY")
         if not self.api_key:
             raise RuntimeError("DEEPGRAM_API_KEY not set")
+        
+        self.client = httpx.AsyncClient(
+            timeout=10.0, 
+            limits=httpx.Limits(max_keepalive_connections=10, max_connections=20)
+        )
+        self.url = "https://api.deepgram.com/v1/listen"
 
     async def transcribe(self, wav_bytes: bytes):
         """
@@ -28,21 +34,20 @@ class DeepgramSTT:
                 "punctuate": "true"
             }
 
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    url,
+            response = await self.client.post(
+                    self.url,
                     headers=headers,
                     params=params,
                     content=wav_bytes
                 )
-                response.raise_for_status()
-                
-                data = response.json()
-                alt = data["results"]["channels"][0]["alternatives"][0]
-                transcript = alt.get("transcript", "")
-                lang = data.get("metadata", {}).get("detected_language", "en")
-                
-                return transcript, lang
+            response.raise_for_status()
+            
+            data = response.json()
+            alt = data["results"]["channels"][0]["alternatives"][0]
+            transcript = alt.get("transcript", "")
+            lang = data.get("metadata", {}).get("detected_language", "en")
+            
+            return transcript, lang
             
         except httpx.HTTPStatusError as e:
             raise RuntimeError(f"Deepgram API error: {e.response.status_code} - {e.response.text}")

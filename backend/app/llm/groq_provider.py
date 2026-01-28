@@ -2,8 +2,9 @@ import os
 import logging
 from typing import List, Dict
 from dotenv import load_dotenv
-from groq import Groq
 from app.sessions import get_session
+from groq import AsyncGroq
+import re
 
 logger = logging.getLogger(__name__)
 load_dotenv()
@@ -15,7 +16,7 @@ class GroqLLM:
             logger.error("GROQ_API_KEY is missing from environment.")
             raise ValueError("Missing Groq API Key")
         
-        self.client = Groq(api_key=self.api_key)
+        self.client = AsyncGroq(api_key=self.api_key)
 
 
     def _get_history(self, session_id: str) -> List[Dict[str, str]]:
@@ -38,7 +39,7 @@ class GroqLLM:
             messages.extend(session.history[-10:])
             messages.append({"role": "user", "content": text})
             
-            completion = self.client.chat.completions.create(
+            completion = await self.client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
                 messages=messages,
                 temperature=0.7,
@@ -59,3 +60,51 @@ class GroqLLM:
         except Exception as e:
             logger.error(f"Groq LLM Error: {str(e)}", exc_info=True)
             return "I'm sorry, I'm having trouble thinking right now."
+  
+    async def get_response_stream(self, text: str, lang: str, session_id: str):
+        """
+        Streams the response and yields complete sentences while maintaining context.
+        """
+        session = get_session(session_id)
+        if not session:
+            yield "Session error."
+            return
+
+        messages = [{"role": "system", "content": session.system_prompt}]
+        messages.extend(session.history[-10:]) 
+        messages.append({"role": "user", "content": text})
+
+        try:
+
+            stream = await self.client.chat.completions.create(
+                model="llama-3.3-70b-versatile", 
+                messages=messages,
+                stream=True,
+                temperature=0.7,
+                max_tokens=150
+            )
+
+            full_response = ""
+            buffer = ""
+            
+            async for chunk in stream:
+                token = chunk.choices[0].delta.content or ""
+                buffer += token
+                full_response += token
+
+                if re.search(r'[.!?](\s|$)', buffer) or '\n' in buffer:
+                    parts = re.split(r'([.!?]\s|(?<=[.!?])\n|\n)', buffer, maxsplit=1)
+                    if len(parts) > 1:
+                        sentence = parts[0] + parts[1]
+                        yield sentence.strip()
+                        buffer = parts[2] if len(parts) > 2 else ""
+
+            if buffer.strip():
+                yield buffer.strip()
+
+            session.history.append({"role": "user", "content": text})
+            session.history.append({"role": "assistant", "content": full_response})
+
+        except Exception as e:
+            logger.error(f"Groq Stream Error: {e}")
+            yield "I encountered an error."

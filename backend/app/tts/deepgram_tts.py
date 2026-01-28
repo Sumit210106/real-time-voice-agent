@@ -11,14 +11,20 @@ class DeepgramTTS:
         self.api_key = os.getenv("DEEPGRAM_API_KEY")
         if not self.api_key:
             raise RuntimeError("DEEPGRAM_API_KEY not set")
-
+        self.client = httpx.AsyncClient(
+            timeout=10.0,
+            limits=httpx.Limits(max_keepalive_connections=5, max_connections=10)
+        )
+        self.url = "https://api.deepgram.com/v1/speak?model=aura-asteria-en&encoding=linear16&sample_rate=16000"
+        
     async def generate_audio(self, text: str) -> bytes:
         """
         Generate audio from text using Deepgram TTS
         Returns: Audio bytes (MP3 or WAV format)
         """
+        if not text.strip():
+            return b""
         try:
-            url = "https://api.deepgram.com/v1/speak?model=aura-asteria-en"
             
             headers = {
                 "Authorization": f"Token {self.api_key}",
@@ -29,17 +35,15 @@ class DeepgramTTS:
                 "text": text
             }
 
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(url, headers=headers, json=payload)
-                response.raise_for_status()
-                
-                audio_bytes = response.content
-                logger.info(f"TTS generated {len(audio_bytes)} bytes")
-                return audio_bytes
+            response = await self.client.post(
+                self.url, 
+                headers=headers, 
+                json=payload
+            )
+            response.raise_for_status()
             
-        except httpx.HTTPStatusError as e:
-            logger.error(f"Deepgram TTS API error: {e.response.status_code} - {e.response.text}")
-            raise RuntimeError(f"Deepgram TTS failed: {e.response.status_code}")
+            return response.content
+            
         except Exception as e:
-            logger.error(f"Deepgram TTS error: {e}")
-            raise RuntimeError(f"Deepgram TTS failed: {e}")
+            logger.error(f"TTS Error: {e}")
+            return b""

@@ -1,6 +1,7 @@
 fastapi
 uvicorn
 python-dotenv
+httpx
 numpy
-deepgram-sdk
 groq
+deepgram-sdk

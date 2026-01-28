@@ -5,6 +5,8 @@ import json
 import base64
 import logging
 import traceback
+import asyncio
+import time
 from app.audio.vad import VoiceActivityDetector
 from app.audio.utterance import UtteranceCollector
 from app.stt.dummy import DummySTT
@@ -15,13 +17,30 @@ from app.tts.deepgram_tts import DeepgramTTS
 
 logger = logging.getLogger(__name__)
 
-'''websocket message will be like this -> 
 
-{ "type": "control", "action": "start" }
-{ "type": "status", "state": "listening" }
-{ "type": "audio", "data": "..." }
-{ "type": "transcript", "text": "hello" }
+stt_provider = DeepgramSTT()
+llm_provider = GroqLLM()
+tts_provider = DeepgramTTS()
 
+
+'''
+Websocket Protocol 
+
+Control Messages (Client -> Server)
+   - { "type": "control", "action": "start" } 
+   - { "type": "control", "action": "stop" } 
+
+Status & VAD (Server -> Client)
+   - { "type": "status", "state": "listening" }  
+   - { "type": "vad", "event": "speech_start" }  
+   - { "type": "vad", "event": "speech_end" }    
+
+Audio Data (Bi-directional)
+   - Client -> Server: Binary PCM Chunks (bytes)
+   - Server -> Client: { "type": "partial_agent_response", "audio": "base64...", "ai_partial": "text..." }
+
+Interrupts (Server -> Client)
+   - { "type": "interrupt" } 
 '''
 
 async def websocket_handler(websocket :WebSocket):
@@ -127,9 +146,6 @@ async def audio_ws(websocket: WebSocket):
     noise_hero = NoiseHero()
     vad = VoiceActivityDetector()
     collector = UtteranceCollector()
-    stt = DeepgramSTT()
-    llm = GroqLLM()
-    tts = DeepgramTTS()
     
     last_utterance = None  
     
@@ -154,9 +170,7 @@ async def audio_ws(websocket: WebSocket):
                     
                     if msg_type == "audio_end":
                         logger.info(f"[{session_id}] Audio stream ended by client")
-                        await _process_final_utterance(
-                            websocket, session_id, collector, stt, llm, tts, last_utterance
-                        )
+                        await _process_final_utterance(websocket, session_id, collector, stt_provider, llm_provider, tts_provider, last_utterance)
                     else:
                         logger.debug(f"[{session_id}] Received control message: {msg_type}")
                 
@@ -201,10 +215,7 @@ async def audio_ws(websocket: WebSocket):
                         })
                     
                     if utterance is not None:
-                        last_utterance = utterance.copy()
-                        await _process_utterance(
-                            websocket, session_id, utterance, stt, llm, tts
-                        )
+                        asyncio.create_task(_process_utterance(websocket, session_id, utterance, stt_provider, llm_provider, tts_provider))
                 
                 else:
                     logger.warning(f"[{session_id}] Unknown message type: {message}")
@@ -231,112 +242,73 @@ async def audio_ws(websocket: WebSocket):
             await websocket.close(code=1011, reason="Internal server error")
         except Exception as close_error:
             logger.error(f"Error closing WebSocket: {close_error}")
-
+            
+            
 async def _process_utterance(websocket: WebSocket, session_id: str, utterance: np.ndarray, 
                              stt, llm, tts) -> None:
-    """Process a single utterance through the pipeline."""
+    """
+    Handles the end-to-end voice pipeline: STT -> LLM -> TTS.
+    Optimized for sub-second latency via parallel sentence-level TTS streaming.
+    """
+    start_time = time.perf_counter()
+    uid = session_id[-6:]
+    
     try:
-        print(f"[{session_id}] 🔵 Step 1: Starting utterance processing")
-        
-        if utterance is None or len(utterance) == 0:
-            print(f"[{session_id}] ⚠️ Empty utterance received")
-            logger.warning(f"[{session_id}] Received empty utterance")
-            return
-        
-        duration = calculate_duration(utterance)
+        # 1. Basic Audio Validation
+        duration = len(utterance) / 16000 
+        if duration < 0.4: 
+            return # Ignore micro-noises to save API costs
+
+        print(f"\n[🚀 START PIPELINE | ID: {uid} | Audio: {duration:.2f}s]")
+
+        # 2. STEP 1: STT (Speech to Text)
         wav_data = float32_to_wav_bytes(utterance)
-        print(f"[{session_id}] 🔵 Step 1.5: WAV data size: {len(wav_data)} bytes")
-        logger.info(f"[{session_id}] Processing utterance: {len(utterance)} samples ({duration:.2f}s)")
-        
-        print(f"[{session_id}] 🔵 Step 2: Calling STT...")
-        try:
-            transcript, lang = await stt.transcribe(wav_data)
-            print(f"[{session_id}] ✅ STT Success: transcript='{transcript}' (lang={lang})")
-        except Exception as e:
-            print(f"[{session_id}] ❌ STT Failed: {e}")
-            import traceback
-            traceback.print_exc()
-            logger.error(f"[{session_id}] STT error: {e}")
-            await websocket.send_json({
-                "type": "error",
-                "message": "Speech-to-text failed"
-            })
-            return
+        transcript, lang = await stt.transcribe(wav_data)
         
         if not transcript or not transcript.strip():
-            print(f"[{session_id}] ⚠️ Empty transcript - returning early")
-            logger.debug(f"[{session_id}] Empty transcript")
-            await websocket.send_json({
-                "type": "info",
-                "message": "No speech detected in audio"
-            })
+            print(f"DEBUG 🎙️  | {uid} | STT: [EMPTY]")
             return
         
-        logger.info(f"[{session_id}] Transcript: {transcript}")
+        print(f"DEBUG 🎙️  | {uid} | STT: '{transcript}' | {time.perf_counter()-start_time:.2f}s")
+
+        # 3. SET SESSION STATE (For Barge-in Detection)
+        # We tell the session manager the AI is now generating a response
+        session = get_session(session_id)
+        if session:
+            session.is_playing = True
+
+        # 4. STEP 2 & 3: LLM & PARALLEL TTS
+        print(f"DEBUG 🧠 | {uid} | LLM: Starting Stream...")
         
-        print(f"[{session_id}] 🔵 Step 3: Calling LLM with transcript: '{transcript}'")
-        try:
-            ai_reply = await llm.get_response(transcript, lang, session_id)
-            print(f"[{session_id}] ✅ LLM Success: '{ai_reply}'")
-        except Exception as e:
-            print(f"[{session_id}] ❌ LLM Failed: {e}")
-            import traceback
-            traceback.print_exc()
-            logger.error(f"[{session_id}] LLM error: {e}")
-            await websocket.send_json({
-                "type": "error",
-                "message": "AI response generation failed"
-            })
-            return
-        
-        print(f"[{session_id}] 🔵 Step 4: Calling TTS...")
-        audio_bytes = None
-        audio_b64 = ""
-        try:
-            audio_bytes = await tts.generate_audio(ai_reply)
-            if audio_bytes:
-                audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
-                print(f"[{session_id}] ✅ TTS Success: {len(audio_bytes)} bytes")
-            else:
-                print(f"[{session_id}] ⚠️ TTS returned no audio")
-        except Exception as e:
-            print(f"[{session_id}] ❌ TTS Failed: {e}")
-            import traceback
-            traceback.print_exc()
-            logger.error(f"[{session_id}] TTS error: {e}")
-        
-        print(f"[{session_id}] 🔵 Step 5: Sending response to client...")
-        try:
-            session = get_session(session_id)
-            if session:
-                session.is_playing = True
-            response_data = {
-                "type": "agent_response",
-                "text": transcript,
-                "ai_response": ai_reply,
-                "language": lang,
-                "duration": duration,
-                "audio": audio_b64,
-                "status": "completed"
-            }
-            print(f"[{session_id}] 🔵 Response data prepared, sending...")
-            await websocket.send_json(response_data)
-            print(f"[{session_id}] ✅ Response sent successfully!")
-            logger.info(f"[{session_id}] Response sent: {ai_reply[:50]}...")
-        except Exception as e:
-            print(f"[{session_id}] ❌ Failed to send response: {e}")
-            import traceback
-            traceback.print_exc()
-            logger.error(f"[{session_id}] Failed to send response: {e}")
-            
+        # Helper function to generate audio and send via WebSocket concurrently
+        async def generate_and_send(sentence_text):
+            try:
+                # Generate audio for just this sentence
+                audio_bytes = await tts.generate_audio(sentence_text)
+                
+                if audio_bytes:
+                    audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
+                    await websocket.send_json({
+                        "type": "partial_agent_response",
+                        "text": transcript,
+                        "ai_partial": sentence_text,
+                        "audio": audio_b64
+                    })
+                    print(f"DEBUG 📡 | {uid} | Sent chunk | {time.perf_counter()-start_time:.2f}s")
+            except Exception as tts_err:
+                logger.error(f"TTS Parallel Task Error: {tts_err}")
+
+        async for sentence in llm.get_response_stream(transcript, lang, session_id):
+            asyncio.create_task(generate_and_send(sentence))
+
+        print(f"DEBUG ✅ | {uid} | PIPELINE HANDED TO TASKS | Total: {time.perf_counter()-start_time:.2f}s")
+
     except Exception as e:
-        print(f"[{session_id}] ❌ Critical error in _process_utterance: {e}")
-        import traceback
-        traceback.print_exc()
-        logger.error(f"[{session_id}] Utterance processing error: {e}", exc_info=True)
-        
-        
-        
+        print(f"DEBUG 🛑 | {uid} | ERROR: {str(e)}")
+        session = get_session(session_id)
+        if session:
+            session.is_playing = False
+             
 async def _process_final_utterance(websocket: WebSocket, session_id: str, collector, 
                                    stt, llm, tts, last_utterance) -> None:
     """Process any remaining buffered audio on stream end."""
@@ -360,7 +332,7 @@ async def _process_final_utterance(websocket: WebSocket, session_id: str, collec
         
         if utterance_to_process is not None and len(utterance_to_process) > 0:
             logger.info(f"[{session_id}] Starting to process final utterance...")
-            await _process_utterance(websocket, session_id, utterance_to_process, stt, llm, tts)
+            await _process_utterance(websocket, session_id, utterance_to_process, stt_provider, llm_provider, tts_provider)
             logger.info(f"[{session_id}] Finished processing final utterance")
         else:
             logger.info(f"[{session_id}] No final utterance to process")
