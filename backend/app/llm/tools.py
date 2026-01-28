@@ -1,53 +1,77 @@
 import os
+import json
 import logging
+from pathlib import Path
+from dotenv import load_dotenv
 from tavily import TavilyClient
 
 logger = logging.getLogger(__name__)
 
+
+env_path = Path(__file__).parent.parent.parent.parent / '.env'
+load_dotenv(dotenv_path=env_path, override=True)
+
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
-tavily = TavilyClient(api_key=TAVILY_API_KEY) if TAVILY_API_KEY else None
 
-async def search_web(query: str) -> str:
-    
-    if not tavily:
-        logger.error("Tavily API Key is missing. Search skipped.")
-        return "Search error: API Key not configured."
+if not TAVILY_API_KEY:
+    logger.warning("⚠️ TAVILY_API_KEY not configured in .env file. Web search will be disabled.")
+else:
+    logger.info(f"✅ Tavily Key loaded successfully")
 
-    try:
-        search_result = tavily.search(
-            query=query, 
-            search_depth="ultra-fast", 
-            max_results=3
-        )
-        
-        results = search_result.get('results', [])
-        if not results:
-            return "No relevant web results found for this query."
-            
-        context = "REAL-TIME WEB DATA (Cite these sources in your spoken response):\n"
-        for r in results:
-            context += f"\n- Source: {r['url']}\n- Excerpt: {r['content']}\n"
-        
-        return context
-
-    except Exception as e:
-        logger.error(f"Tavily Search Error: {str(e)}")
-        return "The web search service is currently unavailable. Please answer based on your internal knowledge."
 
 TAVILY_TOOL_DEFINITION = {
     "type": "function",
     "function": {
         "name": "search_web",
-        "description": "Use this tool to search the internet for current events, news, weather, or real-time facts that occurred after your training data.",
+        "description": "Search the web for real-time news, weather, or facts.",
         "parameters": {
             "type": "object",
             "properties": {
-                "query": {
-                    "type": "string", 
-                    "description": "A precise search query derived from the user's question."
-                }
+                "query": {"type": "string", "description": "The search query"}
             },
             "required": ["query"]
         }
     }
 }
+
+def search_web(query: str) -> str:
+    """Search the web using Tavily API and return formatted results."""
+    if not TAVILY_API_KEY:
+        logger.warning(f"Search requested but TAVILY_API_KEY not configured. Query: {query}")
+        return json.dumps({
+            "results": [],
+            "error": "Web search not configured. Please set TAVILY_API_KEY in .env file.",
+            "suggestion": "Get a free API key from https://tavily.com"
+        })
+    
+    try:
+        logger.info(f"🔍 Searching Tavily for: {query}")
+        client = TavilyClient(api_key=TAVILY_API_KEY)
+        
+        response = client.search(
+            query=query,
+            search_depth="advanced",
+            max_results=5
+        )
+        
+        if response and response.get("results"):
+            formatted_results = []
+            for result in response["results"][:3]:
+                formatted_results.append({
+                    "title": result.get("title", ""),
+                    "content": result.get("content", "")[:500],
+                    "url": result.get("url", "")
+                })
+            
+            logger.info(f"✅ Got {len(formatted_results)} search results")
+            return json.dumps({
+                "results": formatted_results,
+                "answer": response.get("answer"),
+                "follow_up_questions": response.get("follow_up_questions")
+            })
+        else:
+            return json.dumps({"results": [], "error": "No results found"})
+            
+    except Exception as e:
+        logger.error(f"❌ Search failed: {str(e)}")
+        return json.dumps({"results": [], "error": f"Search failed: {str(e)}"})

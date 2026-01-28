@@ -10,6 +10,8 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 
+logger = logging.getLogger(__name__)
+
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
@@ -18,6 +20,18 @@ app.add_middleware(
     allow_methods=["*"], 
     allow_headers=["*"],  
 )
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize critical components on startup."""
+    logger.info("🚀 Starting up voice agent...")
+    try:
+        from .llm.groq_provider import GroqLLM
+        # Pre-initialize the LLM client to warm up connections
+        llm = GroqLLM()
+        logger.info("✅ Groq LLM initialized")
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to pre-initialize Groq: {e}")
 
 class ContextUpdate(BaseModel):
     context: str

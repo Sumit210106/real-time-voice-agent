@@ -10,7 +10,7 @@ class VoiceSession:
         self.created_at = datetime.datetime.now()
         
         self.history: List[Dict] = []
-        self.system_prompt: str = "You are a helpful, concise AI voice assistant."
+        self.system_prompt: str = "You are a helpful voice assistant. Use search tools for current events. CRITICAL: Keep spoken responses extremely brief (1-2 sentences). If the user wants more detail, they will ask. Never list long strings of numbers or statistics unless specifically asked"
         
         self.is_playing : bool = False
     
