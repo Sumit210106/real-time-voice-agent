@@ -1,23 +1,18 @@
-from fastapi import WebSocket, WebSocketDisconnect
-from .sessions import create_session, remove_session ,get_session
-import numpy as np
-import json
-import base64
-import logging
-import traceback
-import asyncio
 import time
+import asyncio
+from fastapi import WebSocket, WebSocketDisconnect
+from .sessions import create_session, remove_session, get_session
 from app.audio.vad import VoiceActivityDetector
-from app.audio.utterance import UtteranceCollector
-from app.stt.dummy import DummySTT
-from app.audio.wav_util import float32_to_wav_bytes, calculate_duration
-from app.stt.deepgram_provider import DeepgramSTT
+from app.stt.deepgram_stream import DeepgramStreamingSTT
 from app.llm.groq_provider import GroqLLM
 from app.tts.deepgram_tts import DeepgramTTS
-from app.stt.deepgram_stream import DeepgramStreamingSTT
+from app.stt.deepgram_provider import DeepgramSTT
+from app.audio.vad import VoiceActivityDetector
+from app.audio.wav_util import float32_to_wav_bytes, calculate_duration
+import numpy as np
+import logging
 
 logger = logging.getLogger(__name__)
-
 
 stt_provider = DeepgramSTT()
 llm_provider = GroqLLM()
@@ -137,7 +132,6 @@ class NoiseHero:
     
 async def audio_ws(websocket: WebSocket):
     await websocket.accept()
-    # Fix 1: Pass "guest_user" string instead of websocket object
     session_id = create_session(user_id="guest_user")
     uid = session_id[-6:] 
     
@@ -149,13 +143,18 @@ async def audio_ws(websocket: WebSocket):
     last_speech_time = time.perf_counter()
     is_user_speaking = False
     current_transcript = "" 
+    turn_anchor = None  
 
     async def handle_transcript(transcript: str):
         nonlocal current_transcript
         if transcript.strip():
             current_transcript = transcript 
             print(f"   📝 [TRANSCRIPTING] {uid}: \"{transcript}\"")
-            await websocket.send_json({"type": "caption", "text": transcript})
+            await websocket.send_json({
+                "type": "caption", 
+                "text": transcript,
+                "role": "user" 
+            })
     
     stt_stream = DeepgramStreamingSTT(on_transcript=handle_transcript)
     await stt_stream.connect()
@@ -187,7 +186,8 @@ async def audio_ws(websocket: WebSocket):
                 if event == "speech_end":
                     is_user_speaking = False
                     last_speech_time = time.perf_counter()
-                    print(f"😶 [VAD] User stopped speaking. Waiting for turn trigger...")
+                    turn_anchor = time.perf_counter()  # THE ANCHOR: Set when speech ends
+                    print(f"😶 [VAD] User stopped speaking (ANCHOR SET). Waiting for turn trigger...")
 
                 silence_duration = time.perf_counter() - last_speech_time
                 if not is_user_speaking and silence_duration > 0.8 and current_transcript.strip():
@@ -197,7 +197,7 @@ async def audio_ws(websocket: WebSocket):
                     print(f"\n🚀 [PIPELINE TRIGGER] Processing User Request: \"{final_input}\"")
                     
                     task = asyncio.create_task(
-                        _process_text_to_audio(websocket, session_id, final_input, silence_duration)
+                        _process_text_to_audio(websocket, session_id, final_input, turn_anchor)
                     )
                     active_tasks[session_id] = task
 
@@ -211,51 +211,72 @@ async def audio_ws(websocket: WebSocket):
             pass
         remove_session(session_id)
 
-async def _process_text_to_audio(websocket, session_id, transcript, vad_latency):
+async def _process_text_to_audio(websocket, session_id, transcript, turn_anchor):
+    """
+    Process user input through the full pipeline with streaming TTS.
+    turn_anchor: absolute time when user stopped speaking (the "truth" anchor)
+    """
     uid = session_id[-6:]
-    start_time = time.perf_counter()
     session = get_session(session_id)
     if session: session.is_playing = True
     
     try:
+        stt_start = turn_anchor
         llm_start = time.perf_counter()
+        
+        stt_latency = (llm_start - stt_start) * 1000
+        
         first_sentence = True
+        first_audio_sent = False
+        tts_latency = 0
+        tool_used = False
         
         print(f"   🧠 [LLM] Requesting response from Groq...")
         
         async for sentence in llm_provider.get_response_stream(transcript, "en", session_id):
             if first_sentence:
-                ttft = time.perf_counter() - llm_start
-                if session:
-                    tool_used = (ttft > 2.5 or "check" in sentence.lower())
-                    
-                    session.update_metrics(ttft=ttft, tool_used=tool_used)
-                    
-                    if tool_used:
-                        print(f"   🔧 [METRICS] Tool was used - TTFT: {ttft:.3f}s")
-                
+                tool_used = (sentence.lower().count("check") > 0 or 
+                            sentence.lower().count("search") > 0)
                 first_sentence = False
             
             print(f"   💬 [LLM SENTENCE] \"{sentence}\"")
             
             tts_start = time.perf_counter()
             audio = await tts_provider.generate_audio(sentence)
-            tts_lat = time.perf_counter() - tts_start
-            
-            total_e2e = time.perf_counter() - start_time + vad_latency
+            tts_latency = (time.perf_counter() - tts_start) * 1000
+
+            if audio and not first_audio_sent:
+                llm_latency = (tts_start - llm_start) * 1000  
+                actual_e2e = (time.perf_counter() - turn_anchor) * 1000  
+                
+                if session:
+                    session.update_metrics(ttft=llm_latency/1000, tool_used=tool_used)
+                
+                await websocket.send_json({
+                    "type": "pipeline_metrics",
+                    "metrics": {
+                        "vad": 300,  
+                        "stt": round(stt_latency, 0),
+                        "llm": round(llm_latency, 0),
+                        "tts": round(tts_latency, 0),
+                        "e2e": round(actual_e2e, 0),
+                        "search": "Tavily" if tool_used else "None"
+                    }
+                })
+                
+                print(f"   📊 [METRICS] VAD: {300}ms | STT: {stt_latency:.0f}ms | LLM: {llm_latency:.0f}ms | TTS: {tts_latency:.0f}ms | E2E: {actual_e2e:.0f}ms")
+                first_audio_sent = True
 
             if audio:
-                if not first_sentence and sentence: 
-                    print(f"   ⚡ [FIRST AUDIO] Ready in {ttft:.3f}s (incl. filler if tool used)")
-
+                await websocket.send_bytes(audio)
+                
                 await websocket.send_json({
                     "type": "partial_agent_response",
-                    "ai_partial": sentence,
-                    "metrics": session.get_metrics() if session else {}
+                    "ai_partial": sentence
                 })
-                await websocket.send_bytes(audio)
         
-        print(f"✅ [PIPELINE FINISHED] Total Turnaround: {time.perf_counter() - start_time + vad_latency:.3f}s\n")
+        total_time = (time.perf_counter() - turn_anchor) * 1000
+        print(f"✅ [PIPELINE COMPLETE] Total Time from User Input: {total_time:.0f}ms\n")
                 
     except asyncio.CancelledError:
         print(f"✂️  [PIPELINE CANCELLED] ID: {uid}")
