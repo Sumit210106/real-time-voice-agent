@@ -1,7 +1,7 @@
 "use client";
 import React, { useState, useRef, useEffect } from "react";
 import { Mic, MicOff } from "lucide-react";
-import { initAudioContext, readTimeDomain, calcRMS, floatTo16BitPCM } from "@/utils/audio";
+import { initAudioContext, readTimeDomain, calcRMS ,floatTo16BitPCM} from "@/utils/audio";
 
 export default function VoiceMic() {
   const [isActive, setIsActive] = useState(false);
@@ -11,11 +11,12 @@ export default function VoiceMic() {
   type TranscriptTurn = {
     id: number;
     text: string;
-    speaker: "user";
+    speaker: "user" | "ai";
     startedAt: number;
     endedAt: number;
   };
 
+  const activeSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const [turns, setTurns] = useState<TranscriptTurn[]>([]);
   const speechStartTimeRef = useRef<number | null>(null);
   const turnId = useRef(0);
@@ -62,7 +63,7 @@ export default function VoiceMic() {
     smoothRef.current = smoothRef.current * 0.7 + percent * 0.3;
     const speakingNow = smoothRef.current > SPEAK_THRESHOLD;
     setVolume(smoothRef.current);
-    setIsSpeaking(speakingNow); // Only controls the UI "Activity" text
+    setIsSpeaking(speakingNow); 
 
     rafRef.current = requestAnimationFrame(updateLoop);
   };
@@ -92,39 +93,81 @@ export default function VoiceMic() {
     try {
       const ws = new WebSocket("ws://localhost:8000/ws/audio");
       wsRef.current = ws;
-      ws.onmessage = (event) => {
+      ws.onmessage = async (event) => {
+
         try {
           const msg = JSON.parse(event.data);
 
-          //  Backend tells us user started talking
-          if (msg.type === "vad" && msg.event === "speech_start") {
-            speechStartTimeRef.current = Date.now();
+          if (msg.type === "interrupt") {
+            if (activeSourceRef.current) {
+              try {
+                activeSourceRef.current.stop();
+                activeSourceRef.current.disconnect();
+              } catch (e) {
+                console.error("Error stopping audio source on interrupt:", e);
+              }
+              activeSourceRef.current = null;
+              console.log("AI Audio Interrupted & Hardware Stopped");
+            }
           }
 
-          //  Backend sends AI response
           if (msg.type === "agent_response") {
             const now = Date.now();
-            const startTime = speechStartTimeRef.current || now;
-            
-            setTurns(prev => [
+            setTurns((prev) => {
+              const isDuplicate = prev.some(t => t.text === msg.ai_response && (now - t.id) < 500);
+              if (isDuplicate) return prev;
+              
+              return [
               ...prev,
-              {
-                id: turnId.current++,
-                text: msg.text,
+              { 
+                id: now ,
+                text: msg.text || "...", 
                 speaker: "user",
-                startedAt: startTime,
-                endedAt: now,
-              }
-            ]);
+                startedAt: Date.now(),
+                endedAt: Date.now()
+              },
+              { 
+                id: now + 1, 
+                text: msg.ai_response, 
+                speaker: "ai",
+                startedAt: Date.now(),
+                endedAt: Date.now() 
+              },
+          ]});
             
-            if (msg.audio) {
-              const audio = new Audio(`data:audio/wav;base64,${msg.audio}`);
-              audio.play();
+            if (msg.audio && audioRef.current) {
+              const { context } = audioRef.current;
+              const binaryString = window.atob(msg.audio);
+              const len = binaryString.length;
+              const bytes = new Uint8Array(len);
+              for (let i = 0; i < len; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+              }
+
+              context.decodeAudioData(bytes.buffer)
+                .then((buffer) => {
+                  if (activeSourceRef.current) {
+                    try { activeSourceRef.current.stop(); } catch(e) {}
+                  }
+
+                  const source = context.createBufferSource();
+                  source.buffer = buffer;
+                  source.connect(context.destination);
+                  
+                  activeSourceRef.current = source;
+                  source.start(0);
+
+                  source.onended = () => {
+                    if (activeSourceRef.current === source) {
+                      activeSourceRef.current = null;
+                    }
+                  };
+                })
+                .catch((err) => console.error("❌ Audio Decode Error:", err));
             }
-            speechStartTimeRef.current = null;
           }
         } catch (err) {
-          console.error("WS Message Error:", err);
+          console.error("❌ WS Message Error:", err);
         }
       };
 
@@ -132,12 +175,11 @@ export default function VoiceMic() {
       ws.onclose = () => console.log("Audio WS closed");
 
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
 
       streamRef.current = stream;
 
-      // Force 16kHz for STT efficiency and lower network bandwidth
       const context = new AudioContext({ sampleRate: 16000 });
       await context.resume();
 
@@ -152,8 +194,6 @@ export default function VoiceMic() {
       const worklet = new AudioWorkletNode(context, "recorder-processor");
       workletRef.current = worklet;
 
-      // Connect source to Analyser (UI) and Worklet (Backend)
-      // DO NOT connect to context.destination to prevent speaker-to-mic feedback loop
       source.connect(analyser);
       source.connect(worklet);
       
@@ -219,8 +259,22 @@ export default function VoiceMic() {
             <div className="text-[10px] text-zinc-500 mb-1 font-mono uppercase">
               User · {((turn.endedAt - turn.startedAt) / 1000).toFixed(1)}s
             </div>
-            <div className="text-sm text-zinc-200 font-mono">
-              {turn.text}
+              <div className="w-full max-h-64 overflow-y-auto border-t border-zinc-800 pt-4 flex flex-col gap-3">
+              {turns.map((turn) => (
+                <div
+                  key={turn.id}
+                  className={`max-w-[85%] p-3 rounded-2xl font-mono text-sm ${
+                    turn.speaker === "ai"
+                      ? "bg-zinc-800 text-zinc-200 self-start rounded-tl-none"
+                      : "bg-blue-600 text-white self-end rounded-tr-none"
+                  }`}
+                >
+                  <div className="text-[9px] uppercase tracking-widest opacity-50 mb-1">
+                    {turn.speaker === "ai" ? "Assistant" : "You"}
+                  </div>
+                  {turn.text}
+                </div>
+              ))}
             </div>
           </div>
         ))}

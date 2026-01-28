@@ -23,11 +23,11 @@ class GroqLLM:
             self.sessions[session_id] = [{"role": "system", "content": self.system_prompt}]
         return self.sessions[session_id]
 
-    async def get_response(self, user_text: str, session_id: str) -> str:
+    async def get_response(self, text: str, language: str, session_id: str = None):
         """
         Generates a conversational response based on history.
         """
-        if not user_text:
+        if not text:
             return ""
         session = get_session(session_id)
         if not session:
@@ -36,7 +36,7 @@ class GroqLLM:
         try:
             messages = [{"role": "system", "content": session.system_prompt}]
             messages.extend(session.history[-10:])
-            messages.append({"role": "user", "content": user_text})
+            messages.append({"role": "user", "content": text})
             
             completion = self.client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
@@ -48,7 +48,7 @@ class GroqLLM:
             )
 
             response_text = completion.choices[0].message.content
-            session.history.append({"role": "user", "content": user_text})
+            session.history.append({"role": "user", "content": text})
             session.history.append({"role": "assistant", "content": response_text})
 
             if len(session.history) > 20:
