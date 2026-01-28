@@ -78,7 +78,10 @@ class GroqLLM:
                 return
 
         if response_message.tool_calls:
+            yield "Let me check that for you..."
+            
             messages.append(response_message)
+            full_assistant_response = ""
             
             for tool_call in response_message.tool_calls:
                 if tool_call.function.name == "search_web":
@@ -87,7 +90,6 @@ class GroqLLM:
                         query = args.get('query', '')
                         logger.info(f"🔍 [TOOL USE] Searching for: {query}")
                         
-                        # Call search_web synchronously (it's now a regular function)
                         search_results = search_web(query)
                         
                         messages.append({
@@ -98,7 +100,6 @@ class GroqLLM:
                         })
                     except Exception as tool_err:
                         logger.error(f"Failed to execute search tool: {tool_err}")
-                        # Return empty results instead of continuing
                         messages.append({
                             "role": "tool",
                             "tool_call_id": tool_call.id,
@@ -112,25 +113,27 @@ class GroqLLM:
                 stream=True,
                 temperature=0.7
             )
+            
             async for sentence in self._stream_sentences(final_stream):
+                full_assistant_response += sentence + " "
                 yield sentence
+
+            session.history.append({"role": "user", "content": text})
+            session.history.append({"role": "assistant", "content": full_assistant_response.strip()})
 
         elif response_message.content:
             content = response_message.content.strip()
             
-            # Filter out malformed function syntax if present
             if content and not re.match(r'^\w+\{.*\}$', content):
                 sentences = re.split(r'(?<=[.!?])\s+', content)
                 for s in sentences:
                     if s.strip():
                         yield s.strip()
             else:
-                # If response is just malformed function call, ask for clarification or retry
                 logger.warning(f"Filtered malformed function call output: {content}")
                 yield "I'm processing that request. Could you please repeat your question?"
 
-        session.history.append({"role": "user", "content": text})
-        if response_message and response_message.content:
+            session.history.append({"role": "user", "content": text})
             session.history.append({"role": "assistant", "content": response_message.content})
 
     async def _stream_sentences(self, stream):

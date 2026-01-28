@@ -222,15 +222,12 @@ async def _process_text_to_audio(websocket, session_id, transcript, vad_latency)
     
     try:
         llm_start = time.perf_counter()
-        first_token = True
+        first_sentence = True
         
         print(f"   🧠 [LLM] Requesting response from Groq...")
         
         async for sentence in llm_provider.get_response_stream(transcript, "en", session_id):
-            if first_token:
-                ttft = time.perf_counter() - llm_start
-                print(f"   ⚡ [LLM TTFT] First sentence generated in {ttft:.3f}s")
-                first_token = False
+            ttft = time.perf_counter() - llm_start
             
             print(f"   💬 [LLM SENTENCE] \"{sentence}\"")
             
@@ -241,7 +238,10 @@ async def _process_text_to_audio(websocket, session_id, transcript, vad_latency)
             total_e2e = time.perf_counter() - start_time + vad_latency
 
             if audio:
-                print(f"   🔊 [TTS] Audio chunk ready ({tts_lat:.3f}s latency)")
+                if first_sentence:
+                    print(f"   ⚡ [FIRST AUDIO] Ready in {ttft:.3f}s (incl. filler if tool used)")
+                    first_sentence = False
+
                 await websocket.send_json({
                     "type": "partial_agent_response",
                     "ai_partial": sentence,
