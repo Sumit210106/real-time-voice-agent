@@ -47,7 +47,6 @@ class GroqLLM:
                 tools=[TAVILY_TOOL_DEFINITION],
                 tool_choice="auto",
                 max_tokens=300, 
-                temperature=0.7,
                 top_p=1,
                 stream=False 
             )
