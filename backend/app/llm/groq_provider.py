@@ -3,6 +3,7 @@ import logging
 from typing import List, Dict
 from dotenv import load_dotenv
 from groq import Groq
+from app.sessions import get_session
 
 logger = logging.getLogger(__name__)
 load_dotenv()
@@ -15,34 +16,31 @@ class GroqLLM:
             raise ValueError("Missing Groq API Key")
         
         self.client = Groq(api_key=self.api_key)
-        
-        self.sessions: Dict[str, List[Dict[str, str]]] = {}
-        
-        self.system_prompt = (
-            "You are a helpful, witty, and concise voice assistant. "
-            "Keep responses short (under 2 sentences) to maintain conversation flow. "
-            "Avoid using lists, bullet points, or complex punctuation that is hard to read aloud. "
-            "Speak naturally, as if you are on a phone call."
-        )
+
 
     def _get_history(self, session_id: str) -> List[Dict[str, str]]:
         if session_id not in self.sessions:
             self.sessions[session_id] = [{"role": "system", "content": self.system_prompt}]
         return self.sessions[session_id]
 
-    async def get_response(self, user_text: str, language: str, session_id: str) -> str:
+    async def get_response(self, user_text: str, session_id: str) -> str:
         """
         Generates a conversational response based on history.
         """
         if not user_text:
             return ""
-
+        session = get_session(session_id)
+        if not session:
+            logger.error(f"Session {session_id} not found.")
+            return "I'm sorry, I couldn't find your session."
         try:
-            history = self._get_history(session_id)
-            history.append({"role": "user", "content": user_text})
+            messages = [{"role": "system", "content": session.system_prompt}]
+            messages.extend(session.history[-10:])
+            messages.append({"role": "user", "content": user_text})
+            
             completion = self.client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
-                messages=history,
+                messages=messages,
                 temperature=0.7,
                 max_tokens=150, 
                 top_p=1,
@@ -50,10 +48,11 @@ class GroqLLM:
             )
 
             response_text = completion.choices[0].message.content
-            history.append({"role": "assistant", "content": response_text})
+            session.history.append({"role": "user", "content": user_text})
+            session.history.append({"role": "assistant", "content": response_text})
 
-            if len(history) > 11:
-                self.sessions[session_id] = [history[0]] + history[-10:]
+            if len(session.history) > 20:
+                session.history = session.history[-20:]
 
             return response_text
 
