@@ -82,7 +82,8 @@ export default function VoiceMic() {
   const startMic = async () => {
     try {
       addLog("Initializing connection...");
-      const wsUrl = "ws://localhost:8000/ws/audio";
+      // const wsUrl = "ws://localhost:8000/ws/audio";
+      const wsUrl = "wss://real-time-voice-agent.onrender.com/ws/audio"
       const ws = new WebSocket(wsUrl);
       ws.binaryType = "arraybuffer"; 
       wsRef.current = ws;
