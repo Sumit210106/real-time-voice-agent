@@ -21,9 +21,34 @@ class GroqLLM:
         self.client = AsyncGroq(api_key=self.api_key)
         self.model = "llama-3.3-70b-versatile"
 
-    async def get_response_stream(self, text: str, lang: str, session_id: str) -> AsyncGenerator[str, None]:
+    async def warmup(self) -> bool:
+        """
+        Warmup the LLM connection with a test request.
+        Returns True if successful, False otherwise.
+        """
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You are a helpful assistant."},
+                    {"role": "user", "content": "Hi"}
+                ],
+                max_tokens=10,
+                temperature=0.1
+            )
+            return True
+        except Exception as e:
+            logger.error(f"LLM warmup failed: {e}")
+            return False
+
+    async def get_response_stream(self, text: str, language: str, session_id: str) -> AsyncGenerator[str, None]:
         """
         Streams response from Groq, handles tool calls with 400-error fallback.
+        
+        Args:
+            text: User input text
+            language: Language code (e.g., 'en', 'es')
+            session_id: Session identifier
         """
         session = get_session(session_id)
         if not session:
@@ -45,7 +70,15 @@ class GroqLLM:
         )
 
         messages = [{"role": "system", "content": system_instruction}]
-        messages.extend(session.history[-10:]) 
+        
+        # Sanitize history to only include 'role' and 'content' (Groq doesn't support metadata)
+        for msg in session.history[-10:]:
+            if isinstance(msg, dict) and "role" in msg and "content" in msg:
+                messages.append({
+                    "role": msg["role"],
+                    "content": msg["content"]
+                })
+        
         messages.append({"role": "user", "content": text})
 
         response_message = None
