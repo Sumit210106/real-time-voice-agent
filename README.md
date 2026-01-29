@@ -53,7 +53,7 @@ The system handles:
 │  ┌──────────────────────────────────────────────────────────┐   │
 │  │              STREAMING AI PIPELINE                       │   │
 │  │                                                          │   │
-│  │   Deepgram STT  ──>  Groq LLM  ──>  Deepgram/Cartesia   │   │
+│  │   Deepgram STT  ──>  Groq LLM  ──>  Deepgram/Cartesia    │   │
 │  │   (nova-2)          (llama3-70b)    TTS (streaming)      │   │
 │  └──────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────┘

@@ -30,7 +30,7 @@ export default function AdminDashboard() {
   useEffect(() => {
     const fetchStats = async () => {
       try {
-        const res = await fetch('http://localhost:8000/api/admin/stats');
+        const res = await fetch('https://real-time-voice-agent.onrender.com/api/admin/stats');
         const data = await res.json();
         setStats(data);
       } catch (err) {
@@ -49,7 +49,7 @@ export default function AdminDashboard() {
     if (!targetSession || !newContext) return;
 
     try {
-      const res = await fetch(`http://localhost:8000/api/admin/update-context`, {
+      const res = await fetch(`https://real-time-voice-agent.onrender.com/api/admin/update-context`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_id: targetSession, context: newContext }),
