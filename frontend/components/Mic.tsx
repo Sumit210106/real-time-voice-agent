@@ -17,10 +17,10 @@ export default function VoiceMic() {
   const [agentSpeaking, setAgentSpeaking] = useState(false);
 
   type PipelineMetrics = {
-    vad: number;
-    stt: number;
-    llm: number;
-    tts: number;
+    // vad: number;
+    // stt: number;
+    // llm: number;
+    // tts: number;
     e2e: number;
   };
 
@@ -466,10 +466,6 @@ export default function VoiceMic() {
         <h2 className="text-xs uppercase text-zinc-500 mb-6 tracking-widest">Latency Breakdown</h2>
         {currentMetrics ? (
           <div className="space-y-3 mb-6">
-            <MetricRow label="VAD" value={currentMetrics.vad} />
-            <MetricRow label="STT" value={currentMetrics.stt} />
-            <MetricRow label="LLM" value={currentMetrics.llm} />
-            <MetricRow label="TTS" value={currentMetrics.tts} />
             <div className="pt-3 mt-3 border-t border-zinc-800">
               <MetricRow label="Total E2E" value={currentMetrics.e2e} highlight />
             </div>
