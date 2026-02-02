@@ -1,15 +1,16 @@
-name: Keep Render Alive
+
+name: Keep Render Backend Alive
 
 on:
   schedule:
-    - cron: '*/12 * * * *'
-  workflow_dispatch: 
+    - cron: "*/12 * * * *"
+  workflow_dispatch: {}
 
 jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - name: Ping Server
+      - name: Hit Render backend
         run: |
-          curl -s https://real-time-voice-agent.onrender.com/health > /dev/null
-          echo "Server pinged at $(date)"
+          curl -I https://real-time-voice-agent.onrender.com/health
+
